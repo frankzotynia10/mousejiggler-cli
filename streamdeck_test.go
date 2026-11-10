@@ -1,6 +1,7 @@
 package main
 
 import (
+	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
@@ -8,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"golang.org/x/net/websocket"
+	"github.com/gorilla/websocket"
 )
 
 // Fake Stream Deck host: checks registration, shows a key, presses it twice.
@@ -26,12 +27,19 @@ func TestStreamDeckProtocol(t *testing.T) {
 		Payload map[string]any `json:"payload"`
 	}
 	done := make(chan error, 1)
-	srv := httptest.NewServer(websocket.Handler(func(ws *websocket.Conn) {
+	// Like Stream Deck: refuse any handshake that carries an Origin header.
+	up := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return r.Header.Get("Origin") == "" }}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ws, err := up.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("handshake rejected: %v", err)
+			return
+		}
 		defer ws.Close()
 		recv := func() msg {
 			var m msg
 			ws.SetReadDeadline(time.Now().Add(5 * time.Second))
-			if err := websocket.JSON.Receive(ws, &m); err != nil {
+			if err := ws.ReadJSON(&m); err != nil {
 				t.Errorf("receive: %v", err)
 			}
 			return m
@@ -48,15 +56,15 @@ func TestStreamDeckProtocol(t *testing.T) {
 		if m := recv(); m.Event != "registerPlugin" || m.UUID != "plugin-uuid" {
 			t.Errorf("bad register: %+v", m)
 		}
-		websocket.JSON.Send(ws, map[string]string{"event": "willAppear", "context": "key1"})
+		ws.WriteJSON(map[string]string{"event": "willAppear", "context": "key1"})
 		if got := title(); got == "" || strings.HasPrefix(got, "PAUSED") {
 			t.Errorf("initial title %q", got)
 		}
-		websocket.JSON.Send(ws, map[string]string{"event": "keyDown", "context": "key1"})
+		ws.WriteJSON(map[string]string{"event": "keyDown", "context": "key1"})
 		if got := title(); got != "PAUSED\ntoday" {
 			t.Errorf("after first press %q", got)
 		}
-		websocket.JSON.Send(ws, map[string]string{"event": "keyDown", "context": "key1"})
+		ws.WriteJSON(map[string]string{"event": "keyDown", "context": "key1"})
 		if got := title(); strings.HasPrefix(got, "PAUSED") {
 			t.Errorf("after second press %q", got)
 		}

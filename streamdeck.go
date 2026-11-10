@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/net/websocket"
+	"github.com/gorilla/websocket"
 )
 
 // Stream Deck plugin mode. The same jiggler.exe ships inside the
@@ -64,11 +64,15 @@ func runStreamDeck(args []string) error {
 		return err
 	}
 	lg := openLog()
-	ws, err := websocket.Dial(fmt.Sprintf("ws://127.0.0.1:%d", *port), "", "http://127.0.0.1/")
+	// No Origin header: Stream Deck rejects handshakes that carry one
+	// (browsers always send Origin, so this keeps web pages out).
+	ws, _, err := websocket.DefaultDialer.Dial(fmt.Sprintf("ws://127.0.0.1:%d", *port), nil)
 	if err != nil {
 		lg.Printf("streamdeck: connect: %v", err)
 		return err
 	}
+	defer ws.Close()
+	lg.Printf("streamdeck: connected on port %d", *port)
 	p := &sdPlugin{ws: ws, contexts: map[string]sdKey{}}
 	if err := p.send(map[string]string{"event": *reg, "uuid": *uuid}); err != nil {
 		return err
@@ -89,7 +93,7 @@ func runStreamDeck(args []string) error {
 	}()
 	for {
 		var ev sdEvent
-		if err := websocket.JSON.Receive(ws, &ev); err != nil {
+		if err := ws.ReadJSON(&ev); err != nil {
 			return nil // Stream Deck closed the connection (quit/update)
 		}
 		switch ev.Event {
@@ -121,7 +125,7 @@ func runStreamDeck(args []string) error {
 func (p *sdPlugin) send(v any) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return websocket.JSON.Send(p.ws, v)
+	return p.ws.WriteJSON(v)
 }
 
 // cachedTaskStatus avoids spawning schtasks on every poll.
