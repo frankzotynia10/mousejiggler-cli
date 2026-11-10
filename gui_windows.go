@@ -229,7 +229,9 @@ func (g *guiState) refreshStatus() {
 	}
 	now := time.Now()
 	state := "outside schedule"
-	if u, ok := pausedUntil(now); ok {
+	if task := taskStatus(); task != "not installed" && !loopRunning() {
+		state = "STOPPED (not running: click Save & Install)"
+	} else if u, ok := pausedUntil(now); ok {
 		state = "PAUSED until " + u.Format("Mon 15:04")
 	} else if c.sched.Active(now) {
 		state = "ACTIVE now"

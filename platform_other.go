@@ -14,6 +14,7 @@ func singleInstance() (func(), error) { return func() {}, nil }
 func install(*config) (string, error) { return "", errUnsupported }
 func uninstall() (string, error)      { return "", errUnsupported }
 func runGUI() error                   { usage(); return errUnsupported }
+func loopRunning() bool               { return false }
 func taskStatus() string              { return "n/a (not Windows)" }
 
 type awakeKeeper struct{}
