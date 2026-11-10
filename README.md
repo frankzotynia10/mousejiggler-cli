@@ -41,9 +41,17 @@ jiggler install --days Mon-Thu
 # Machine-readable state
 jiggler status --json | ConvertFrom-Json
 
-# Pause / resume
-jiggler uninstall
-jiggler install
+# Take a day off (schedule untouched, no reinstall)
+jiggler pause                         # rest of today
+jiggler pause --for 3h
+jiggler pause --days 2                # today + tomorrow
+jiggler pause --until 13:30           # today (or tomorrow if already past)
+jiggler pause --until 2026-11-16      # back on Monday
+jiggler resume
+jiggler toggle                        # resume if paused, else pause rest of today
+
+# One word for scripts/buttons: ACTIVE | IDLE | PAUSED | OFF
+jiggler status --short
 ```
 
 Times use the **24h** clock. `--days` accepts `Mon-Fri`, `Mon,Wed,Fri`, `Sat-Sun` or `all`. Set `MOUSEJIGGLER_HOME` to use a different config/log directory.
@@ -55,15 +63,36 @@ Times use the **24h** clock. `--days` accepts `Mon-Fri`, `Mon,Wed,Fri`, `Sat-Sun
 | *(none)* / `gui` | Opens the settings window |
 | `install [flags]` | Saves the settings, copies the exe, registers and (re)starts the scheduled task |
 | `uninstall` | Stops and deletes the task |
-| `status [--json]` | Shows the saved schedule, whether it's active now, the next window and the task state |
+| `status [--json \| --short]` | Shows the saved schedule, whether it's active now, the next window and the task state |
+| `pause [--for D \| --days N \| --until T]` | Pauses jiggling (default: rest of today). The schedule is untouched and it resumes on its own |
+| `resume` | Cancels a pause |
+| `toggle` | Resumes if paused, otherwise pauses for the rest of today |
 | `once` | Sends one zen jiggle immediately (quick test) |
 | `run [flags]` | Runs the loop in the foreground (this is what the task runs) |
 
 Log: `%LOCALAPPDATA%\mousejiggler-cli\jiggler.log`. It records window enter/exit and errors only, and it truncates itself after 1 MB.
+
+## Stream Deck
+
+`jiggler.exe` never opens a window, so it's safe to launch from a button. Stream Deck's **System → Open** action doesn't reliably pass arguments, so point it at shortcuts instead. Create them once in PowerShell:
+
+```powershell
+$exe = "$env:LOCALAPPDATA\Programs\mousejiggler-cli\jiggler.exe"
+$dir = "$env:LOCALAPPDATA\mousejiggler-cli\shortcuts"; New-Item -ItemType Directory $dir -Force | Out-Null
+$sh  = New-Object -ComObject WScript.Shell
+foreach ($c in 'toggle','pause','resume') {
+  $l = $sh.CreateShortcut("$dir\jiggler-$c.lnk"); $l.TargetPath = $exe; $l.Arguments = $c; $l.Save()
+}
+```
+
+Then add a **System → Open** key that points at `jiggler-toggle.lnk`, or one key each for pause and resume.
+
+**Showing state on the key:** Stream Deck's built-in actions can't read an outside program's state. A Multi Action Switch only flips its own icon, so it drifts if you pause from the CLI or GUI or a pause expires. For an accurate label, use a marketplace plugin that runs a command on a timer and shows its output as the key title, and have it run `jiggler.exe status --short` (prints `ACTIVE`, `IDLE`, `PAUSED` or `OFF`).
 
 ## Caveats
 
 - **Waking from sleep** needs wake timers enabled: Control Panel → Power Options → Change plan settings → Advanced → Sleep → *Allow wake timers* → **Enable**. Some corporate images turn this off.
 - **Locked workstation:** Windows won't let a user process inject input into the lock screen, so `SendInput` fails while the PC is locked (this shows up in the log). The keep-awake request still applies. In practice: if the session is unlocked when a window starts, the displays stay on for the whole window. If Windows locked overnight, the monitors may not wake until you touch the keyboard. Group Policy can force a lock-screen timeout, and no user-level tool can override that.
 - The task runs only while you're logged in (it needs your desktop session). A reboot plus auto-logon, or simply logging in, starts it again.
+- A pause lives in `pause.json` next to the config. The running task checks it every 5 seconds, so pausing and resuming take effect right away without a reinstall.
 - Edits only apply when you click **Save & Install** or run `install`. Editing `config.json` by hand doesn't update the wake-up triggers.
