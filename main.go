@@ -117,6 +117,12 @@ func openLog() *log.Logger {
 }
 
 func main() {
+	if isStreamDeckLaunch(os.Args[1:]) {
+		if err := runStreamDeck(os.Args[1:]); err != nil {
+			os.Exit(1)
+		}
+		return
+	}
 	attachParentConsole()
 	cmd := "gui"
 	if len(os.Args) >= 2 {

@@ -72,22 +72,21 @@ Times use the **24h** clock. `--days` accepts `Mon-Fri`, `Mon,Wed,Fri`, `Sat-Sun
 
 Log: `%LOCALAPPDATA%\mousejiggler-cli\jiggler.log`. It records window enter/exit and errors only, and it truncates itself after 1 MB.
 
-## Stream Deck
+## Stream Deck plugin
 
-`jiggler.exe` never opens a window, so it's safe to launch from a button. Stream Deck's **System → Open** action doesn't reliably pass arguments, so point it at shortcuts instead. Create them once in PowerShell:
+Install `mousejiggler.streamDeckPlugin` from the release or the build artifacts by double-clicking it. Then drag **Mouse Jiggler → Jiggler Toggle** onto a key.
 
+- **Press:** pauses for the rest of today, or resumes if it's paused.
+- **The key shows the live state:** green with `ACTIVE` or `IDLE` (outside your hours), gray with `PAUSED today` or `PAUSED Mon 00:00`, or gray with `OFF` if the scheduled task isn't installed.
+- The plugin reads the same `pause.json` and `config.json` as the CLI and GUI, every 3 seconds. The key stays accurate when you pause from the command line or the GUI, or when a pause expires.
+- The plugin uses its own copy of `jiggler.exe`. Install the jiggler itself (`jiggler install` or the GUI) as usual. Without it the key shows `OFF`.
+
+To use plain launcher keys instead of the plugin, point Stream Deck's **System → Open** action at a shortcut. **Open** doesn't reliably pass arguments, so create the shortcut first:
 ```powershell
-$exe = "$env:LOCALAPPDATA\Programs\mousejiggler-cli\jiggler.exe"
-$dir = "$env:LOCALAPPDATA\mousejiggler-cli\shortcuts"; New-Item -ItemType Directory $dir -Force | Out-Null
-$sh  = New-Object -ComObject WScript.Shell
-foreach ($c in 'toggle','pause','resume') {
-  $l = $sh.CreateShortcut("$dir\jiggler-$c.lnk"); $l.TargetPath = $exe; $l.Arguments = $c; $l.Save()
-}
+$sh = New-Object -ComObject WScript.Shell
+$l = $sh.CreateShortcut("$env:LOCALAPPDATA\mousejiggler-cli\jiggler-toggle.lnk")
+$l.TargetPath = "$env:LOCALAPPDATA\Programs\mousejiggler-cli\jiggler.exe"; $l.Arguments = 'toggle'; $l.Save()
 ```
-
-Then add a **System → Open** key that points at `jiggler-toggle.lnk`, or one key each for pause and resume.
-
-**Showing state on the key:** Stream Deck's built-in actions can't read an outside program's state. A Multi Action Switch only flips its own icon, so it drifts if you pause from the CLI or GUI or a pause expires. For an accurate label, use a marketplace plugin that runs a command on a timer and shows its output as the key title, and have it run `jiggler.exe status --short` (prints `ACTIVE`, `IDLE`, `PAUSED` or `OFF`).
 
 ## Caveats
 

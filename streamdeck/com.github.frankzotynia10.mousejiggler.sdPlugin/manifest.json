@@ -1,0 +1,31 @@
+{
+  "Name": "Mouse Jiggler",
+  "Version": "1.0.0.0",
+  "Author": "mousejiggler-cli",
+  "Description": "Pause/resume the scheduled mouse jiggler. The key shows the live state: ACTIVE, IDLE, PAUSED or OFF.",
+  "UUID": "com.github.frankzotynia10.mousejiggler",
+  "URL": "https://github.com/frankzotynia10/mousejiggler-cli",
+  "SDKVersion": 2,
+  "Software": { "MinimumVersion": "6.4" },
+  "OS": [{ "Platform": "windows", "MinimumVersion": "10" }],
+  "CodePath": "jiggler.exe",
+  "CodePathWin": "jiggler.exe",
+  "Icon": "imgs/plugin",
+  "Category": "Mouse Jiggler",
+  "CategoryIcon": "imgs/category",
+  "Actions": [
+    {
+      "UUID": "com.github.frankzotynia10.mousejiggler.toggle",
+      "Name": "Jiggler Toggle",
+      "Tooltip": "Press to pause for the rest of today or resume. Shows the live jiggler state.",
+      "Icon": "imgs/action",
+      "Controllers": ["Keypad"],
+      "SupportedInMultiActions": true,
+      "DisableAutomaticStates": true,
+      "States": [
+        { "Image": "imgs/on", "TitleAlignment": "bottom", "FontSize": 12, "ShowTitle": true },
+        { "Image": "imgs/paused", "TitleAlignment": "bottom", "FontSize": 12, "ShowTitle": true }
+      ]
+    }
+  ]
+}

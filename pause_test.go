@@ -83,3 +83,25 @@ func TestShortState(t *testing.T) {
 		t.Errorf("got %s", got)
 	}
 }
+
+func TestKeyFace(t *testing.T) {
+	t.Setenv("MOUSEJIGGLER_HOME", t.TempDir())
+	now := at("2026-11-10 09:00")
+	if s, title := keyFace(now, "Running"); s != 0 || title != "ACTIVE" {
+		t.Errorf("got %d %q", s, title)
+	}
+	if s, title := keyFace(now, "not installed"); s != 1 || title != "OFF" {
+		t.Errorf("got %d %q", s, title)
+	}
+	setPause(endOfDay(now))
+	if s, title := keyFace(now, "Running"); s != 1 || title != "PAUSED\ntoday" {
+		t.Errorf("got %d %q", s, title)
+	}
+	setPause(at("2026-11-16 00:00"))
+	if _, title := keyFace(now, "Running"); title != "PAUSED\nMon\n00:00" {
+		t.Errorf("got %q", title)
+	}
+	if !isStreamDeckLaunch([]string{"-port", "28196", "-pluginUUID", "x", "-registerEvent", "registerPlugin", "-info", "{}"}) {
+		t.Error("launch not detected")
+	}
+}
