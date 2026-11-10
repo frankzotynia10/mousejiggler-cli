@@ -43,7 +43,14 @@ Commands:
               and (re)start it. Re-run any time to apply changes.
   uninstall   Stop and remove the scheduled task
   status      Show settings, whether a window is active, next window, task
-              state. Add --json for machine-readable output.
+              state. --json for machine-readable output, --short for one
+              word: ACTIVE, IDLE (outside a window), PAUSED or OFF (no task).
+  pause       Pause jiggling without touching the schedule. Default: rest
+              of today. --for 3h | --days 2 | --until 13:30 |
+              --until 2026-11-14 | --until "2026-11-14 08:00"
+  resume      Cancel a pause
+  toggle      Resume if paused, otherwise pause for the rest of today
+              (one-button control, e.g. a Stream Deck key)
   once        Send a single zen jiggle now and exit
   run         Run the scheduler loop in the foreground (what the task runs)
 
@@ -72,6 +79,7 @@ func parseConfig(args []string) (*config, error) {
 	var windows multiFlag
 	fs.Var(&windows, "window", "")
 	jsonOut := fs.Bool("json", false, "")
+	shortOut := fs.Bool("short", false, "")
 	if err := fs.Parse(args); err != nil {
 		return nil, err
 	}
@@ -86,10 +94,11 @@ func parseConfig(args []string) (*config, error) {
 		return nil, err
 	}
 	jsonOutput = *jsonOut
+	shortOutput = *shortOut
 	return c, nil
 }
 
-var jsonOutput bool
+var jsonOutput, shortOutput bool
 
 // openLog logs to file (and stdout when attached to a console). The file is
 // truncated once it passes 1 MB so it never needs cleanup.
@@ -128,6 +137,43 @@ func main() {
 	if len(os.Args) > 2 {
 		args = os.Args[2:]
 	}
+	switch cmd {
+	case "pause":
+		until, err := parsePauseUntil(args, time.Now())
+		if err == nil {
+			err = setPause(until)
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("paused until %s\n", until.Format("Mon Jan 2 15:04"))
+		return
+	case "resume":
+		if err := clearPause(); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		fmt.Println("resumed")
+		return
+	case "toggle":
+		var err error
+		if _, paused := pausedUntil(time.Now()); paused {
+			if err = clearPause(); err == nil {
+				fmt.Println("resumed")
+			}
+		} else {
+			until := endOfDay(time.Now())
+			if err = setPause(until); err == nil {
+				fmt.Printf("paused until %s\n", until.Format("Mon Jan 2 15:04"))
+			}
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	cfg, err := parseConfig(args)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -143,7 +189,9 @@ func main() {
 			fmt.Println("jiggled")
 		}
 	case "status":
-		if jsonOutput {
+		if shortOutput {
+			fmt.Println(shortState(cfg, time.Now(), taskStatus()))
+		} else if jsonOutput {
 			b, _ := json.MarshalIndent(statusOf(cfg, time.Now()), "", "  ")
 			fmt.Println(string(b))
 		} else {
@@ -174,6 +222,7 @@ type status struct {
 	Windows   []string `json:"windows"`
 	Interval  string   `json:"interval"`
 	Active    bool     `json:"active"`
+	Paused    string   `json:"paused_until,omitempty"`
 	NextStart string   `json:"next_start,omitempty"`
 	NextEnd   string   `json:"next_end,omitempty"`
 	Task      string   `json:"task"`
@@ -187,10 +236,28 @@ func statusOf(cfg *config, now time.Time) status {
 		Active: cfg.sched.Active(now), Task: taskStatus(),
 		Config: configPath(), Log: logPath(),
 	}
+	if u, ok := pausedUntil(now); ok {
+		s.Active = false
+		s.Paused = u.Format(time.RFC3339)
+	}
 	if a, b, ok := cfg.sched.Next(now); ok {
 		s.NextStart, s.NextEnd = a.Format(time.RFC3339), b.Format(time.RFC3339)
 	}
 	return s
+}
+
+// shortState is a one-word state for button labels and scripts.
+func shortState(cfg *config, now time.Time, task string) string {
+	switch {
+	case task == "not installed":
+		return "OFF"
+	case func() bool { _, p := pausedUntil(now); return p }():
+		return "PAUSED"
+	case cfg.sched.Active(now):
+		return "ACTIVE"
+	default:
+		return "IDLE"
+	}
 }
 
 func statusText(cfg *config, now time.Time) string {
@@ -198,7 +265,11 @@ func statusText(cfg *config, now time.Time) string {
 	fmt.Fprintf(&b, "days:     %s\n", cfg.days)
 	fmt.Fprintf(&b, "windows:  %s\n", strings.Join(cfg.windows, ", "))
 	fmt.Fprintf(&b, "interval: %s\n", cfg.interval)
-	fmt.Fprintf(&b, "active:   %v\n", cfg.sched.Active(now))
+	if u, ok := pausedUntil(now); ok {
+		fmt.Fprintf(&b, "active:   false (PAUSED until %s)\n", u.Format("Mon Jan 2 15:04"))
+	} else {
+		fmt.Fprintf(&b, "active:   %v\n", cfg.sched.Active(now))
+	}
 	if s, e, ok := cfg.sched.Next(now); ok {
 		fmt.Fprintf(&b, "next:     %s -> %s\n", s.Format("Mon Jan 2 15:04"), e.Format("15:04"))
 	}
@@ -221,13 +292,22 @@ func runLoop(cfg *config, lg *log.Logger) error {
 	keeper := newAwakeKeeper() // pins an OS thread for the power request
 	defer keeper.Close()
 
-	active := false
+	active, paused := false, false
 	var last time.Time
 	tick := time.NewTicker(5 * time.Second)
 	defer tick.Stop()
 	for {
 		now := time.Now()
-		in := cfg.sched.Active(now)
+		until, p := pausedUntil(now)
+		if p != paused {
+			paused = p
+			if p {
+				lg.Printf("paused until %s", until.Format("Mon Jan 2 15:04"))
+			} else {
+				lg.Printf("pause over")
+			}
+		}
+		in := !paused && cfg.sched.Active(now)
 		if in != active {
 			active = in
 			keeper.Set(in)

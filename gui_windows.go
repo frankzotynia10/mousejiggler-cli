@@ -82,6 +82,8 @@ const (
 	idInstall   = 100
 	idUninstall = 101
 	idTest      = 102
+	idPause     = 103
+	idResume    = 104
 	idDayBase   = 200 // +0..6 for Mon..Sun
 )
 
@@ -227,14 +229,16 @@ func (g *guiState) refreshStatus() {
 	}
 	now := time.Now()
 	state := "outside schedule"
-	if c.sched.Active(now) {
+	if u, ok := pausedUntil(now); ok {
+		state = "PAUSED until " + u.Format("Mon 15:04")
+	} else if c.sched.Active(now) {
 		state = "ACTIVE now"
 	}
 	next := ""
 	if s, e, ok := c.sched.Next(now); ok {
 		next = fmt.Sprintf("Next window: %s -> %s", s.Format("Mon Jan 2 15:04"), e.Format("15:04"))
 	}
-	setText(g.status, fmt.Sprintf("Task: %s   |   Saved schedule: %s\r\n%s", taskStatus(), state, next))
+	setText(g.status, fmt.Sprintf("Task: %s   |   %s\r\n%s", taskStatus(), state, next))
 }
 
 func wndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
@@ -268,6 +272,16 @@ func wndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 			} else {
 				msgBox(out, mbIconInfo)
 			}
+		case idPause:
+			if err := setPause(endOfDay(time.Now())); err != nil {
+				msgBox(err.Error(), mbIconError)
+			}
+			g.refreshStatus()
+		case idResume:
+			if err := clearPause(); err != nil {
+				msgBox(err.Error(), mbIconError)
+			}
+			g.refreshStatus()
 		case idTest:
 			if err := jiggle(); err != nil {
 				msgBox(err.Error(), mbIconError)
@@ -326,7 +340,7 @@ func runGUI() error {
 		return fmt.Errorf("RegisterClassEx: %v", err)
 	}
 
-	const clientW, clientH = 400, 330
+	const clientW, clientH = 400, 366
 	rc := rect{0, 0, int32(g.px(clientW)), int32(g.px(clientH))}
 	procAdjustWindowRect.Call(uintptr(unsafe.Pointer(&rc)), wsOverlappedWindow, 0)
 	hwnd, _, err := procCreateWindowExW.Call(0, uintptr(unsafe.Pointer(className)),
@@ -350,7 +364,9 @@ func runGUI() error {
 	g.ctl("BUTTON", "Save && Install", bsDefPushButton|wsTabStop, 0, 16, 228, 120, 30, idInstall)
 	g.ctl("BUTTON", "Uninstall", bsPushButton|wsTabStop, 0, 144, 228, 110, 30, idUninstall)
 	g.ctl("BUTTON", "Test jiggle", bsPushButton|wsTabStop, 0, 262, 228, 122, 30, idTest)
-	g.status = g.ctl("STATIC", "", 0, 0, 16, 272, 370, 48, 0)
+	g.ctl("BUTTON", "Pause rest of today", bsPushButton|wsTabStop, 0, 16, 266, 184, 30, idPause)
+	g.ctl("BUTTON", "Resume", bsPushButton|wsTabStop, 0, 208, 266, 176, 30, idResume)
+	g.status = g.ctl("STATIC", "", 0, 0, 16, 310, 370, 48, 0)
 
 	c, err := loadConfig()
 	if err != nil {
