@@ -7,11 +7,8 @@ import (
 )
 
 func TestTaskXML(t *testing.T) {
-	cfg, err := parseConfig(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	out := taskXML(`PC\frank`, `C:\Users\frank\AppData\Local\Programs\x\jiggler.exe`, cfg.taskArgs(), cfg.sched)
+	cfg := defaultConfig()
+	out := taskXML(`PC\frank`, `C:\Users\frank\AppData\Local\Programs\x\jiggler.exe`, "run", cfg.sched)
 	// encoding="UTF-16" is only true once written as UTF-16; strip for parsing here.
 	body := out[strings.Index(out, "?>")+2:]
 	var v struct {
@@ -35,7 +32,7 @@ func TestTaskXML(t *testing.T) {
 	if v.Calendar[0].Days.Inner != "<Monday/><Tuesday/><Wednesday/><Thursday/><Friday/>" {
 		t.Fatalf("days: %s", v.Calendar[0].Days.Inner)
 	}
-	if v.Args != "run --days Mon-Fri --window 08:05-12:05 --window 13:30-17:30 --interval 1m0s" {
+	if v.Args != "run" {
 		t.Fatalf("args: %s", v.Args)
 	}
 	if !v.Wake {

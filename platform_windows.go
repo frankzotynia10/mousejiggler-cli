@@ -156,30 +156,30 @@ func copyFile(src, dst string) error {
 	return os.Rename(tmp, dst)
 }
 
-func install(cfg *config) error {
+func install(cfg *config) (string, error) {
 	self, err := os.Executable()
 	if err != nil {
-		return err
+		return "", err
 	}
 	dir := installDir()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
+		return "", err
 	}
 	target := filepath.Join(dir, "jiggler.exe")
 
-	// Stop any running copy so the exe can be replaced on upgrade.
+	// Stop any running copy so the exe can be replaced and picks up changes.
 	schtasks("/End", "/TN", taskName)
 	if !strings.EqualFold(filepath.Clean(self), filepath.Clean(target)) {
 		if err := copyFile(self, target); err != nil {
-			return fmt.Errorf("copy to %s: %w", target, err)
+			return "", fmt.Errorf("copy to %s: %w", target, err)
 		}
 	}
 
 	u, err := user.Current()
 	if err != nil {
-		return err
+		return "", err
 	}
-	xmlText := taskXML(u.Username, target, cfg.taskArgs(), cfg.sched)
+	xmlText := taskXML(u.Username, target, "run", cfg.sched)
 
 	// schtasks /XML expects UTF-16 LE with BOM.
 	xmlPath := filepath.Join(appDir(), "task.xml")
@@ -192,38 +192,40 @@ func install(cfg *config) error {
 		buf[3+2*i] = byte(c >> 8)
 	}
 	if err := os.WriteFile(xmlPath, buf, 0o644); err != nil {
-		return err
+		return "", err
 	}
 
 	if out, err := schtasks("/Create", "/TN", taskName, "/XML", xmlPath, "/F"); err != nil {
-		return fmt.Errorf("schtasks /Create failed: %s", out)
+		return "", fmt.Errorf("schtasks /Create failed (%v): %s", err, out)
+	}
+	// Save only once the task exists; the task's `run` reads this file.
+	if err := cfg.save(); err != nil {
+		return "", fmt.Errorf("save config: %w", err)
 	}
 	if out, err := schtasks("/Run", "/TN", taskName); err != nil {
-		return fmt.Errorf("task created but failed to start: %s", out)
+		return "", fmt.Errorf("task created but failed to start: %s", out)
 	}
-	fmt.Printf("Installed %s\nTask %q registered and started.\nArgs: %s\nLog: %s\n",
-		target, taskName, cfg.taskArgs(), logPath())
-	return nil
+	return fmt.Sprintf("Installed and started.\nDays: %s\nWindows: %s\nInterval: %s\nExe: %s",
+		cfg.days, strings.Join(cfg.windows, ", "), cfg.interval, target), nil
 }
 
-func uninstall() error {
+func uninstall() (string, error) {
 	schtasks("/End", "/TN", taskName)
 	if out, err := schtasks("/Delete", "/TN", taskName, "/F"); err != nil {
-		return fmt.Errorf("schtasks /Delete failed: %s", out)
+		return "", fmt.Errorf("schtasks /Delete failed: %s", out)
 	}
-	fmt.Printf("Task %q removed. Files left in %s and %s (safe to delete).\n", taskName, installDir(), appDir())
-	return nil
+	return fmt.Sprintf("Task %q removed. Files in %s and %s are safe to delete.", taskName, installDir(), appDir()), nil
 }
 
-func taskStatus() {
+func taskStatus() string {
 	out, err := schtasks("/Query", "/TN", taskName, "/FO", "LIST")
 	if err != nil {
-		fmt.Println("task:     not installed")
-		return
+		return "not installed"
 	}
 	for _, line := range strings.Split(out, "\n") {
-		if strings.HasPrefix(line, "Status:") || strings.HasPrefix(line, "Next Run Time:") {
-			fmt.Println("task:     " + strings.TrimSpace(line))
+		if k, v, ok := strings.Cut(line, ":"); ok && strings.TrimSpace(k) == "Status" {
+			return strings.TrimSpace(v)
 		}
 	}
+	return "installed"
 }

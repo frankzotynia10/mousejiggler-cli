@@ -11,9 +11,10 @@ var errUnsupported = errors.New("only supported on Windows")
 func jiggle() error                   { return errUnsupported }
 func attachParentConsole()            {}
 func singleInstance() (func(), error) { return func() {}, nil }
-func install(*config) error           { return errUnsupported }
-func uninstall() error                { return errUnsupported }
-func taskStatus()                     {}
+func install(*config) (string, error) { return "", errUnsupported }
+func uninstall() (string, error)      { return "", errUnsupported }
+func runGUI() error                   { usage(); return errUnsupported }
+func taskStatus() string              { return "n/a (not Windows)" }
 
 type awakeKeeper struct{}
 

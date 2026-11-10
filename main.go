@@ -3,16 +3,18 @@
 // It sends zero-distance mouse-move events (the cursor never moves) and holds
 // a display-required power request during scheduled windows, so monitors wake
 // up and stay on without interfering with normal use.
+//
+// Run with no arguments for a settings window; every setting is also
+// available on the command line for automation.
 package main
 
 import (
-	"errors"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"log"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 )
@@ -21,13 +23,6 @@ const (
 	appName  = "mousejiggler-cli"
 	taskName = "MouseJigglerCLI"
 )
-
-type config struct {
-	days     string
-	windows  multiFlag
-	interval time.Duration
-	sched    Schedule
-}
 
 type multiFlag []string
 
@@ -38,79 +33,63 @@ func usage() {
 	fmt.Fprintf(os.Stderr, `%s - headless scheduled mouse jiggler (cursor never moves)
 
 Usage:
+  jiggler                      Open the settings window
   jiggler <command> [flags]
 
 Commands:
-  install     Copy jiggler to %%LOCALAPPDATA%%\Programs\%s, register a
-              Task Scheduler task (logon + window starts, wakes PC) and start it
+  gui         Open the settings window
+  install     Save settings, copy jiggler to %%LOCALAPPDATA%%\Programs\%s,
+              register the scheduled task (logon + window starts, wakes PC)
+              and (re)start it. Re-run any time to apply changes.
   uninstall   Stop and remove the scheduled task
-  run         Run the scheduler loop in the foreground (what the task runs)
+  status      Show settings, whether a window is active, next window, task
+              state. Add --json for machine-readable output.
   once        Send a single zen jiggle now and exit
-  status      Show schedule, whether it's active now, and the next window
+  run         Run the scheduler loop in the foreground (what the task runs)
 
-Flags (install / run / status):
-  --days      Days of week, e.g. Mon-Fri, Mon,Wed,Fri, all   (default Mon-Fri)
-  --window    Daily window HH:MM-HH:MM (24h), repeatable
-              (default 08:05-12:05 and 13:30-17:30)
-  --interval  Time between jiggles inside a window             (default 1m)
+Flags (install / run / status). Any flag left out keeps the saved value:
+  --days      Days of week, e.g. Mon-Fri, Mon,Wed,Fri, all
+  --window    Daily window HH:MM-HH:MM (24h). Repeat for several windows;
+              giving any --window replaces all saved windows.
+  --interval  Time between jiggles inside a window, e.g. 60s, 1m
 
-Log: %s
-`, appName, appName, logPath())
+Defaults: Mon-Fri, 08:05-12:05 and 13:30-17:30, every 1m
+Config:   %s
+Log:      %s
+`, appName, appName, configPath(), logPath())
 }
 
+// parseConfig starts from the saved config and applies any flags given.
 func parseConfig(args []string) (*config, error) {
-	cfg := &config{}
+	base, err := loadConfig()
+	if err != nil {
+		return nil, err
+	}
 	fs := flag.NewFlagSet("jiggler", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	fs.StringVar(&cfg.days, "days", "Mon-Fri", "")
-	fs.Var(&cfg.windows, "window", "")
-	fs.DurationVar(&cfg.interval, "interval", time.Minute, "")
+	days := fs.String("days", base.days, "")
+	interval := fs.Duration("interval", base.interval, "")
+	var windows multiFlag
+	fs.Var(&windows, "window", "")
+	jsonOut := fs.Bool("json", false, "")
 	if err := fs.Parse(args); err != nil {
 		return nil, err
 	}
 	if fs.NArg() > 0 {
 		return nil, fmt.Errorf("unexpected argument %q", fs.Arg(0))
 	}
-	if len(cfg.windows) == 0 {
-		cfg.windows = multiFlag{"08:05-12:05", "13:30-17:30"}
+	if len(windows) == 0 {
+		windows = base.windows
 	}
-	if cfg.interval < 5*time.Second {
-		return nil, errors.New("--interval must be at least 5s")
-	}
-	days, err := ParseDays(cfg.days)
+	c, err := newConfig(*days, windows, *interval)
 	if err != nil {
 		return nil, err
 	}
-	cfg.sched.Days = days
-	for _, w := range cfg.windows {
-		win, err := ParseWindow(w)
-		if err != nil {
-			return nil, err
-		}
-		cfg.sched.Windows = append(cfg.sched.Windows, win)
-	}
-	return cfg, nil
+	jsonOutput = *jsonOut
+	return c, nil
 }
 
-// taskArgs reproduces the config as command-line args for the scheduled task.
-func (c *config) taskArgs() string {
-	parts := []string{"run", "--days", strings.ReplaceAll(c.days, " ", "")}
-	for _, w := range c.sched.Windows {
-		parts = append(parts, "--window", w.String())
-	}
-	parts = append(parts, "--interval", c.interval.String())
-	return strings.Join(parts, " ")
-}
-
-func appDir() string {
-	dir, err := os.UserCacheDir() // %LOCALAPPDATA% on Windows
-	if err != nil {
-		dir = os.TempDir()
-	}
-	return filepath.Join(dir, appName)
-}
-
-func logPath() string { return filepath.Join(appDir(), "jiggler.log") }
+var jsonOutput bool
 
 // openLog logs to file (and stdout when attached to a console). The file is
 // truncated once it passes 1 MB so it never needs cleanup.
@@ -130,16 +109,26 @@ func openLog() *log.Logger {
 
 func main() {
 	attachParentConsole()
-	if len(os.Args) < 2 {
-		usage()
-		os.Exit(2)
+	cmd := "gui"
+	if len(os.Args) >= 2 {
+		cmd = strings.ToLower(os.Args[1])
 	}
-	cmd := strings.ToLower(os.Args[1])
 	if cmd == "help" || cmd == "-h" || cmd == "--help" || cmd == "/?" {
 		usage()
 		return
 	}
-	cfg, err := parseConfig(os.Args[2:])
+	if cmd == "gui" {
+		if err := runGUI(); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	var args []string
+	if len(os.Args) > 2 {
+		args = os.Args[2:]
+	}
+	cfg, err := parseConfig(args)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(2)
@@ -154,11 +143,22 @@ func main() {
 			fmt.Println("jiggled")
 		}
 	case "status":
-		printStatus(cfg)
+		if jsonOutput {
+			b, _ := json.MarshalIndent(statusOf(cfg, time.Now()), "", "  ")
+			fmt.Println(string(b))
+		} else {
+			fmt.Print(statusText(cfg, time.Now()))
+		}
 	case "install":
-		err = install(cfg)
+		var msg string
+		if msg, err = install(cfg); err == nil {
+			fmt.Println(msg)
+		}
 	case "uninstall":
-		err = uninstall()
+		var msg string
+		if msg, err = uninstall(); err == nil {
+			fmt.Println(msg)
+		}
 	default:
 		usage()
 		os.Exit(2)
@@ -169,19 +169,41 @@ func main() {
 	}
 }
 
-func printStatus(cfg *config) {
-	now := time.Now()
-	fmt.Printf("days:     %s\n", cfg.days)
-	for _, w := range cfg.sched.Windows {
-		fmt.Printf("window:   %s\n", w)
+type status struct {
+	Days      string   `json:"days"`
+	Windows   []string `json:"windows"`
+	Interval  string   `json:"interval"`
+	Active    bool     `json:"active"`
+	NextStart string   `json:"next_start,omitempty"`
+	NextEnd   string   `json:"next_end,omitempty"`
+	Task      string   `json:"task"`
+	Config    string   `json:"config"`
+	Log       string   `json:"log"`
+}
+
+func statusOf(cfg *config, now time.Time) status {
+	s := status{
+		Days: cfg.days, Windows: cfg.windows, Interval: cfg.interval.String(),
+		Active: cfg.sched.Active(now), Task: taskStatus(),
+		Config: configPath(), Log: logPath(),
 	}
-	fmt.Printf("interval: %s\n", cfg.interval)
-	fmt.Printf("active:   %v\n", cfg.sched.Active(now))
+	if a, b, ok := cfg.sched.Next(now); ok {
+		s.NextStart, s.NextEnd = a.Format(time.RFC3339), b.Format(time.RFC3339)
+	}
+	return s
+}
+
+func statusText(cfg *config, now time.Time) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "days:     %s\n", cfg.days)
+	fmt.Fprintf(&b, "windows:  %s\n", strings.Join(cfg.windows, ", "))
+	fmt.Fprintf(&b, "interval: %s\n", cfg.interval)
+	fmt.Fprintf(&b, "active:   %v\n", cfg.sched.Active(now))
 	if s, e, ok := cfg.sched.Next(now); ok {
-		fmt.Printf("next:     %s -> %s\n", s.Format("Mon Jan 2 15:04"), e.Format("15:04"))
+		fmt.Fprintf(&b, "next:     %s -> %s\n", s.Format("Mon Jan 2 15:04"), e.Format("15:04"))
 	}
-	fmt.Printf("log:      %s\n", logPath())
-	taskStatus()
+	fmt.Fprintf(&b, "task:     %s\n", taskStatus())
+	return b.String()
 }
 
 // runLoop checks the schedule every few seconds. Inside a window it holds the

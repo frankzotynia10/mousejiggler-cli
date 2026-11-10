@@ -155,3 +155,29 @@ func (s Schedule) Next(t time.Time) (start, end time.Time, ok bool) {
 	}
 	return time.Time{}, time.Time{}, false
 }
+
+// DaysString renders days compactly in Mon..Sun order, e.g. "Mon-Fri",
+// "Mon,Wed,Fri", "Mon-Wed,Sat-Sun".
+func DaysString(days [7]bool) string {
+	order := []time.Weekday{time.Monday, time.Tuesday, time.Wednesday, time.Thursday, time.Friday, time.Saturday, time.Sunday}
+	var parts []string
+	for i := 0; i < len(order); {
+		if !days[order[i]] {
+			i++
+			continue
+		}
+		j := i
+		for j+1 < len(order) && days[order[j+1]] {
+			j++
+		}
+		a := order[i].String()[:3]
+		switch {
+		case j == i:
+			parts = append(parts, a)
+		default:
+			parts = append(parts, a+"-"+order[j].String()[:3])
+		}
+		i = j + 1
+	}
+	return strings.Join(parts, ",")
+}

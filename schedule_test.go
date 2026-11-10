@@ -95,3 +95,21 @@ func TestNext(t *testing.T) {
 		}
 	}
 }
+
+func TestDaysString(t *testing.T) {
+	for in, want := range map[string]string{
+		"Mon-Fri":     "Mon-Fri",
+		"all":         "Mon-Sun",
+		"fri,mon,wed": "Mon,Wed,Fri",
+		"Sat-Sun":     "Sat-Sun",
+		"Mon-Tue,Thu": "Mon-Tue,Thu",
+	} {
+		d, err := ParseDays(in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := DaysString(d); got != want {
+			t.Errorf("%s: got %s want %s", in, got, want)
+		}
+	}
+}
