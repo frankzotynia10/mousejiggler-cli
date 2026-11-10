@@ -50,7 +50,7 @@ jiggler pause --until 2026-11-16      # back on Monday
 jiggler resume
 jiggler toggle                        # resume if paused, else pause rest of today
 
-# One word for scripts/buttons: ACTIVE | IDLE | PAUSED | OFF
+# One word for scripts/buttons: ACTIVE | IDLE | PAUSED | STOPPED | OFF
 jiggler status --short
 ```
 
@@ -77,7 +77,7 @@ Log: `%LOCALAPPDATA%\mousejiggler-cli\jiggler.log`. It records window enter/exit
 Install `mousejiggler.streamDeckPlugin` from the release or the build artifacts by double-clicking it. Then drag **Mouse Jiggler → Jiggler Toggle** onto a key.
 
 - **Press:** pauses for the rest of today, or resumes if it's paused.
-- **The key shows the live state:** green with `ACTIVE` or `IDLE` (outside your hours), gray with `PAUSED today` or `PAUSED Mon 00:00`, or gray with `OFF` if the scheduled task isn't installed.
+- **The key shows the live state:** green with `ACTIVE` or `IDLE` (outside your hours), gray with `PAUSED today` or `PAUSED Mon 00:00`, gray with `STOPPED` if the task is installed but the jiggler process isn't running (crashed or killed; fix with **Save & Install** or log off and on), or gray with `OFF` if the scheduled task isn't installed.
 - The plugin reads the same `pause.json` and `config.json` as the CLI and GUI, every 3 seconds. The key stays accurate when you pause from the command line or the GUI, or when a pause expires.
 - The plugin uses its own copy of `jiggler.exe`. Install the jiggler itself (`jiggler install` or the GUI) as usual. Without it the key shows `OFF`.
 

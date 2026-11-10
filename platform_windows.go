@@ -24,6 +24,7 @@ var (
 	procSendInput               = user32.NewProc("SendInput")
 	procSetThreadExecutionState = kernel32.NewProc("SetThreadExecutionState")
 	procCreateMutexW            = kernel32.NewProc("CreateMutexW")
+	procOpenMutexW              = kernel32.NewProc("OpenMutexW")
 	procAttachConsole           = kernel32.NewProc("AttachConsole")
 )
 
@@ -92,8 +93,23 @@ func (k *awakeKeeper) Close()      { close(k.ch) }
 
 var mutexHandle uintptr
 
+const mutexName = `Local\` + appName
+
+// loopRunning reports whether a `jiggler run` loop is alive in this logon
+// session: it holds the named mutex for its whole lifetime, and the OS
+// releases it if the process dies. No output parsing, locale-independent.
+func loopRunning() bool {
+	name, _ := syscall.UTF16PtrFromString(mutexName)
+	h, _, _ := procOpenMutexW.Call(0x00100000 /* SYNCHRONIZE */, 0, uintptr(unsafe.Pointer(name)))
+	if h == 0 {
+		return false
+	}
+	syscall.CloseHandle(syscall.Handle(h))
+	return true
+}
+
 func singleInstance() (func(), error) {
-	name, _ := syscall.UTF16PtrFromString(`Local\` + appName)
+	name, _ := syscall.UTF16PtrFromString(mutexName)
 	h, _, err := procCreateMutexW.Call(0, 0, uintptr(unsafe.Pointer(name)))
 	if h == 0 {
 		return nil, err

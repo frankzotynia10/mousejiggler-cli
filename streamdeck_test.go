@@ -4,6 +4,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -13,6 +14,11 @@ import (
 // Fake Stream Deck host: checks registration, shows a key, presses it twice.
 func TestStreamDeckProtocol(t *testing.T) {
 	t.Setenv("MOUSEJIGGLER_HOME", t.TempDir())
+	var running atomic.Bool
+	running.Store(true)
+	sdLoopRunning = running.Load
+	sdTaskStatus = func() string { return "Running" }
+	defer func() { sdLoopRunning, sdTaskStatus = loopRunning, taskStatus }()
 	type msg struct {
 		Event   string         `json:"event"`
 		UUID    string         `json:"uuid"`
@@ -53,6 +59,12 @@ func TestStreamDeckProtocol(t *testing.T) {
 		websocket.JSON.Send(ws, map[string]string{"event": "keyDown", "context": "key1"})
 		if got := title(); strings.HasPrefix(got, "PAUSED") {
 			t.Errorf("after second press %q", got)
+		}
+		// Background loop dies -> next poll (<=3s) shows STOPPED.
+		running.Store(false)
+		ws.SetReadDeadline(time.Now().Add(5 * time.Second))
+		if got := title(); got != "STOPPED" {
+			t.Errorf("after loop died %q", got)
 		}
 	}))
 	defer srv.Close()

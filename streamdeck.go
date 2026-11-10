@@ -15,8 +15,14 @@ import (
 //   -port N -pluginUUID U -registerEvent E -info JSON
 // and we talk to it over a local WebSocket. One action, "toggle":
 // press = pause rest of today / resume; the key shows the real state
-// (ACTIVE / IDLE / PAUSED / OFF), polled every few seconds, so it never
+// (ACTIVE / IDLE / PAUSED / STOPPED / OFF), polled every few seconds, so it never
 // drifts when you pause from the CLI/GUI or a pause expires.
+
+// Indirection so tests can fake a running, installed jiggler.
+var (
+	sdLoopRunning = loopRunning
+	sdTaskStatus  = taskStatus
+)
 
 func isStreamDeckLaunch(args []string) bool {
 	for _, a := range args {
@@ -67,9 +73,18 @@ func runStreamDeck(args []string) error {
 	if err := p.send(map[string]string{"event": *reg, "uuid": *uuid}); err != nil {
 		return err
 	}
+	stop := make(chan struct{})
+	defer close(stop)
 	go func() {
-		for range time.Tick(3 * time.Second) {
-			p.refreshAll(false)
+		t := time.NewTicker(3 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-t.C:
+				p.refreshAll(false)
+			}
 		}
 	}()
 	for {
@@ -114,19 +129,19 @@ func (p *sdPlugin) cachedTaskStatus(force bool) string {
 	p.taskMu.Lock()
 	defer p.taskMu.Unlock()
 	if force || p.task == "" || time.Since(p.taskTime) > 30*time.Second {
-		p.task, p.taskTime = taskStatus(), time.Now()
+		p.task, p.taskTime = sdTaskStatus(), time.Now()
 	}
 	return p.task
 }
 
 // keyFace maps the jiggler state to the key's image state (0 = on art,
 // 1 = paused/off art) and title.
-func keyFace(now time.Time, task string) (int, string) {
+func keyFace(now time.Time, task string, running bool) (int, string) {
 	cfg, err := loadConfig()
 	if err != nil {
 		return 1, "CONFIG\nERROR"
 	}
-	switch st := shortState(cfg, now, task); st {
+	switch st := shortState(cfg, now, task, running); st {
 	case "PAUSED":
 		until, _ := pausedUntil(now)
 		when := until.Format("Mon\n15:04")
@@ -134,15 +149,15 @@ func keyFace(now time.Time, task string) (int, string) {
 			when = "today"
 		}
 		return 1, "PAUSED\n" + when
-	case "OFF":
-		return 1, "OFF"
+	case "OFF", "STOPPED":
+		return 1, st
 	default:
 		return 0, st
 	}
 }
 
 func (p *sdPlugin) refreshAll(force bool) {
-	state, title := keyFace(time.Now(), p.cachedTaskStatus(force))
+	state, title := keyFace(time.Now(), p.cachedTaskStatus(force), sdLoopRunning())
 	p.mu.Lock()
 	var stale []string
 	for ctx, k := range p.contexts {

@@ -67,19 +67,22 @@ func TestShortState(t *testing.T) {
 	t.Setenv("MOUSEJIGGLER_HOME", t.TempDir())
 	cfg := defaultConfig()
 	in, out := at("2026-11-10 09:00"), at("2026-11-10 12:30")
-	if got := shortState(cfg, in, "Running"); got != "ACTIVE" {
+	if got := shortState(cfg, in, "Running", true); got != "ACTIVE" {
 		t.Errorf("got %s", got)
 	}
-	if got := shortState(cfg, out, "Running"); got != "IDLE" {
+	if got := shortState(cfg, out, "Running", true); got != "IDLE" {
 		t.Errorf("got %s", got)
 	}
-	if got := shortState(cfg, in, "not installed"); got != "OFF" {
+	if got := shortState(cfg, in, "not installed", false); got != "OFF" {
+		t.Errorf("got %s", got)
+	}
+	if got := shortState(cfg, in, "Ready", false); got != "STOPPED" {
 		t.Errorf("got %s", got)
 	}
 	if err := setPause(at("2026-11-11 00:00")); err != nil {
 		t.Fatal(err)
 	}
-	if got := shortState(cfg, in, "Running"); got != "PAUSED" {
+	if got := shortState(cfg, in, "Running", true); got != "PAUSED" {
 		t.Errorf("got %s", got)
 	}
 }
@@ -87,18 +90,21 @@ func TestShortState(t *testing.T) {
 func TestKeyFace(t *testing.T) {
 	t.Setenv("MOUSEJIGGLER_HOME", t.TempDir())
 	now := at("2026-11-10 09:00")
-	if s, title := keyFace(now, "Running"); s != 0 || title != "ACTIVE" {
+	if s, title := keyFace(now, "Running", true); s != 0 || title != "ACTIVE" {
 		t.Errorf("got %d %q", s, title)
 	}
-	if s, title := keyFace(now, "not installed"); s != 1 || title != "OFF" {
+	if s, title := keyFace(now, "not installed", false); s != 1 || title != "OFF" {
+		t.Errorf("got %d %q", s, title)
+	}
+	if s, title := keyFace(now, "Ready", false); s != 1 || title != "STOPPED" {
 		t.Errorf("got %d %q", s, title)
 	}
 	setPause(endOfDay(now))
-	if s, title := keyFace(now, "Running"); s != 1 || title != "PAUSED\ntoday" {
+	if s, title := keyFace(now, "Running", true); s != 1 || title != "PAUSED\ntoday" {
 		t.Errorf("got %d %q", s, title)
 	}
 	setPause(at("2026-11-16 00:00"))
-	if _, title := keyFace(now, "Running"); title != "PAUSED\nMon\n00:00" {
+	if _, title := keyFace(now, "Running", true); title != "PAUSED\nMon\n00:00" {
 		t.Errorf("got %q", title)
 	}
 	if !isStreamDeckLaunch([]string{"-port", "28196", "-pluginUUID", "x", "-registerEvent", "registerPlugin", "-info", "{}"}) {

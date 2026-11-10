@@ -44,7 +44,8 @@ Commands:
   uninstall   Stop and remove the scheduled task
   status      Show settings, whether a window is active, next window, task
               state. --json for machine-readable output, --short for one
-              word: ACTIVE, IDLE (outside a window), PAUSED or OFF (no task).
+              word: ACTIVE, IDLE (outside a window), PAUSED, STOPPED (task
+              installed but its process isn't running) or OFF (no task).
   pause       Pause jiggling without touching the schedule. Default: rest
               of today. --for 3h | --days 2 | --until 13:30 |
               --until 2026-11-14 | --until "2026-11-14 08:00"
@@ -196,7 +197,7 @@ func main() {
 		}
 	case "status":
 		if shortOutput {
-			fmt.Println(shortState(cfg, time.Now(), taskStatus()))
+			fmt.Println(shortState(cfg, time.Now(), taskStatus(), loopRunning()))
 		} else if jsonOutput {
 			b, _ := json.MarshalIndent(statusOf(cfg, time.Now()), "", "  ")
 			fmt.Println(string(b))
@@ -232,6 +233,7 @@ type status struct {
 	NextStart string   `json:"next_start,omitempty"`
 	NextEnd   string   `json:"next_end,omitempty"`
 	Task      string   `json:"task"`
+	Running   bool     `json:"running"`
 	Config    string   `json:"config"`
 	Log       string   `json:"log"`
 }
@@ -239,7 +241,7 @@ type status struct {
 func statusOf(cfg *config, now time.Time) status {
 	s := status{
 		Days: cfg.days, Windows: cfg.windows, Interval: cfg.interval.String(),
-		Active: cfg.sched.Active(now), Task: taskStatus(),
+		Active: cfg.sched.Active(now), Task: taskStatus(), Running: loopRunning(),
 		Config: configPath(), Log: logPath(),
 	}
 	if u, ok := pausedUntil(now); ok {
@@ -253,10 +255,12 @@ func statusOf(cfg *config, now time.Time) status {
 }
 
 // shortState is a one-word state for button labels and scripts.
-func shortState(cfg *config, now time.Time, task string) string {
+func shortState(cfg *config, now time.Time, task string, running bool) string {
 	switch {
 	case task == "not installed":
 		return "OFF"
+	case !running:
+		return "STOPPED"
 	case func() bool { _, p := pausedUntil(now); return p }():
 		return "PAUSED"
 	case cfg.sched.Active(now):
@@ -279,7 +283,12 @@ func statusText(cfg *config, now time.Time) string {
 	if s, e, ok := cfg.sched.Next(now); ok {
 		fmt.Fprintf(&b, "next:     %s -> %s\n", s.Format("Mon Jan 2 15:04"), e.Format("15:04"))
 	}
+	running := "no (jiggler is not running; re-run install or log off/on)"
+	if loopRunning() {
+		running = "yes"
+	}
 	fmt.Fprintf(&b, "task:     %s\n", taskStatus())
+	fmt.Fprintf(&b, "running:  %s\n", running)
 	return b.String()
 }
 
