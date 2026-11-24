@@ -67,8 +67,9 @@ type input struct {
 // never interferes with real mouse use.
 // jiggle moves the pointer 1px right and straight back in one atomic
 // SendInput call, so nothing can land in between and the pointer ends where
-// it started. A zero-distance move is ignored by current Windows builds: it
-// neither resets the idle timer (Teams goes Away) nor wakes monitors.
+// it started. A zero-distance move does reset the idle timer, but in
+// practice it didn't wake monitors that were already off (screens stayed
+// dark at window start and Teams went Away). A real move wakes them.
 func jiggle() error { return sendMoves([2]int32{1, 0}, [2]int32{-1, 0}) }
 
 // zeroJiggle is the old zero-distance move, kept only so `jiggler test` can
