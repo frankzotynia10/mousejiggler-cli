@@ -1,6 +1,6 @@
 # mousejiggler-cli
 
-Headless, scheduled "zen" mouse jiggler for Windows. Wakes your monitors and keeps them on during set hours. The cursor never moves, there's no window and no tray icon, and nothing changes about how you use the PC.
+Headless, scheduled "zen" mouse jiggler for Windows. Wakes your monitors and keeps them on (and Teams green) during set hours. The cursor ends every jiggle exactly where it started, there's no window and no tray icon, and nothing changes about how you use the PC.
 
 Default schedule: **Mon–Fri, 08:05–12:05 and 13:30–17:30**.
 
@@ -10,7 +10,9 @@ Double-click `jiggler.exe` to open a settings window. Everything in it can also 
 
 ## How it works
 
-- **Zen jiggle:** sends a `SendInput` relative mouse move of `0,0`. Windows counts it as user input, which resets the idle timer and wakes sleeping displays, but the pointer stays where it is. This is the same approach as the "zen jiggle" mode in arkane-systems/mousejiggler.
+- **Jiggle:** one `SendInput` call that moves the pointer 1 px right and straight back. Both moves are sent together, so nothing lands in between and the pointer ends where it started. Windows counts it as user input, which resets the idle timer (what Teams and the screen timeout read) and wakes displays that are off.
+  - An earlier version sent a zero-distance move (`0,0`), like the "zen jiggle" mode in arkane-systems/mousejiggler. That resets the idle timer, so it keeps monitors from turning off. But at 08:05 it didn't wake monitors that had been off overnight, and Teams went yellow with the screens off. A real 1 px move is what Windows wakes displays on. `jiggler test` checks that a jiggle resets the idle timer on your machine.
+- **Lock screen:** Windows silently drops injected input while the session is locked. The log says `session is LOCKED` when that happens during a window.
 - **Keep-awake:** inside a window it also holds `SetThreadExecutionState(ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED)`. Outside a window it drops that request, so normal sleep and display-off settings apply again.
 - **Scheduling:** `install` registers one Task Scheduler task. It starts the loop at logon and fires again at each window start on scheduled days, with **Wake to run** turned on. If the PC is asleep at 08:05 it wakes up. If the loop is already running, the extra trigger does nothing.
 - **Headless:** the exe is built as a GUI-subsystem binary, so the scheduled task never flashes a console window. When you run it from a terminal, it attaches to that terminal so you can see its output.
@@ -67,7 +69,8 @@ Times use the **24h** clock. `--days` accepts `Mon-Fri`, `Mon,Wed,Fri`, `Sat-Sun
 | `pause [--for D \| --days N \| --until T]` | Pauses jiggling (default: rest of today). The schedule is untouched and it resumes on its own |
 | `resume` | Cancels a pause |
 | `toggle` | Resumes if paused, otherwise pauses for the rest of today |
-| `once` | Sends one zen jiggle immediately (quick test) |
+| `once` | Sends one jiggle immediately |
+| `test` | Hands-off check (about 25 s) that a jiggle resets the Windows idle timer. Compares the old zero-distance move with the current one |
 | `run [flags]` | Runs the loop in the foreground (this is what the task runs) |
 
 Log: `%LOCALAPPDATA%\mousejiggler-cli\jiggler.log`. It records window enter/exit and errors only, and it truncates itself after 1 MB.

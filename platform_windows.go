@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"os/user"
@@ -26,6 +27,16 @@ var (
 	procCreateMutexW            = kernel32.NewProc("CreateMutexW")
 	procOpenMutexW              = kernel32.NewProc("OpenMutexW")
 	procAttachConsole           = kernel32.NewProc("AttachConsole")
+
+	procGetLastInputInfo          = user32.NewProc("GetLastInputInfo")
+	procGetForegroundWindow       = user32.NewProc("GetForegroundWindow")
+	procGetWindowThreadProcessId  = user32.NewProc("GetWindowThreadProcessId")
+	procQueryFullProcessImageName = kernel32.NewProc("QueryFullProcessImageNameW")
+	procPowerSettingRegister      = syscall.NewLazyDLL("powrprof.dll").NewProc("PowerSettingRegisterNotification")
+	procGetTickCount              = kernel32.NewProc("GetTickCount")
+	procOpenInputDesktop          = user32.NewProc("OpenInputDesktop")
+	procCloseDesktop              = user32.NewProc("CloseDesktop")
+	procGetUserObjectInformationW = user32.NewProc("GetUserObjectInformationW")
 )
 
 const (
@@ -59,13 +70,109 @@ type input struct {
 // jiggle sends a relative mouse move of 0,0. Windows treats it as user input
 // (resets idle timer, wakes displays) but the cursor does not move, so it
 // never interferes with real mouse use.
-func jiggle() error {
-	in := input{typ: inputMouse, mi: mouseInput{dwFlags: mouseeventfMove}}
-	n, _, err := procSendInput.Call(1, uintptr(unsafe.Pointer(&in)), unsafe.Sizeof(in))
-	if n != 1 {
+// jiggle moves the pointer 1px right and straight back in one atomic
+// SendInput call, so nothing can land in between and the pointer ends where
+// it started. A zero-distance move does reset the idle timer, but in
+// practice it didn't wake monitors that were already off (screens stayed
+// dark at window start and Teams went Away). A real move wakes them.
+func jiggle() error { return sendMoves([2]int32{1, 0}, [2]int32{-1, 0}) }
+
+// zeroJiggle is the old zero-distance move, kept only so `jiggler test` can
+// show whether this machine honors it.
+func zeroJiggle() error { return sendMoves([2]int32{0, 0}) }
+
+// foregroundApp names the exe owning the foreground window. Used to explain
+// a jiggle that didn't count: Windows drops injected input while an
+// elevated (admin) window has focus.
+func foregroundApp() string {
+	hwnd, _, _ := procGetForegroundWindow.Call()
+	if hwnd == 0 {
+		return "(none)"
+	}
+	var pid uint32
+	procGetWindowThreadProcessId.Call(hwnd, uintptr(unsafe.Pointer(&pid)))
+	h, err := syscall.OpenProcess(0x1000 /* PROCESS_QUERY_LIMITED_INFORMATION */, false, pid)
+	if err != nil {
+		return fmt.Sprintf("pid %d", pid)
+	}
+	defer syscall.CloseHandle(h)
+	var buf [260]uint16
+	n := uint32(len(buf))
+	if r, _, _ := procQueryFullProcessImageName.Call(uintptr(h), 0, uintptr(unsafe.Pointer(&buf[0])), uintptr(unsafe.Pointer(&n))); r == 0 {
+		return fmt.Sprintf("pid %d", pid)
+	}
+	return filepath.Base(syscall.UTF16ToString(buf[:n]))
+}
+
+// watchDisplay logs every display on/off/dim transition as Windows sees it
+// (GUID_CONSOLE_DISPLAY_STATE), so the log shows whether monitors were on.
+var displayCallback uintptr // kept alive for the process lifetime
+
+// powerBroadcastSetting mirrors POWERBROADCAST_SETTING with a DWORD payload.
+type powerBroadcastSetting struct {
+	guid   syscall.GUID
+	length uint32
+	data   uint32
+}
+
+func watchDisplay(lg *log.Logger) {
+	guid := syscall.GUID{Data1: 0x6FE69556, Data2: 0x704A, Data3: 0x47A0,
+		Data4: [8]byte{0x8F, 0x24, 0xC2, 0x8D, 0x93, 0x6F, 0xDA, 0x47}}
+	displayCallback = syscall.NewCallback(func(ctx, typ uintptr, setting *powerBroadcastSetting) uintptr {
+		if typ != 0x8013 /* PBT_POWERSETTINGCHANGE */ || setting == nil {
+			return 0
+		}
+		state := setting.data
+		names := map[uint32]string{0: "OFF", 1: "ON", 2: "DIMMED"}
+		lg.Printf("display %s (Windows)", names[state])
+		return 0
+	})
+	params := struct{ callback, context uintptr }{displayCallback, 0}
+	var handle uintptr
+	if r, _, _ := procPowerSettingRegister.Call(uintptr(unsafe.Pointer(&guid)), 2, /* DEVICE_NOTIFY_CALLBACK */
+		uintptr(unsafe.Pointer(&params)), uintptr(unsafe.Pointer(&handle))); r != 0 {
+		lg.Printf("display watch unavailable (error %d)", r)
+	}
+}
+
+// idleSeconds is the system idle time Teams and the screen timeout use.
+func idleSeconds() uint32 {
+	var lii struct{ cbSize, dwTime uint32 }
+	lii.cbSize = 8
+	procGetLastInputInfo.Call(uintptr(unsafe.Pointer(&lii)))
+	now, _, _ := procGetTickCount.Call()
+	return (uint32(now) - lii.dwTime) / 1000
+}
+
+func sendMoves(moves ...[2]int32) error {
+	ins := make([]input, len(moves))
+	for i, m := range moves {
+		ins[i] = input{typ: inputMouse, mi: mouseInput{dx: m[0], dy: m[1], dwFlags: mouseeventfMove}}
+	}
+	n, _, err := procSendInput.Call(uintptr(len(ins)), uintptr(unsafe.Pointer(&ins[0])), unsafe.Sizeof(ins[0]))
+	if int(n) != len(ins) {
 		return fmt.Errorf("SendInput: %v", err)
 	}
 	return nil
+}
+
+// sessionLocked reports whether the input desktop is the lock screen.
+// Windows silently drops injected input there (SendInput still reports
+// success), so this is the only way to know the jiggle was blocked.
+func sessionLocked() bool {
+	h, _, _ := procOpenInputDesktop.Call(0, 0, 0x0001 /* DESKTOP_READOBJECTS */)
+	if h == 0 {
+		return true // the secure desktop can't be opened from a user process
+	}
+	defer procCloseDesktop.Call(h)
+	var buf [64]uint16
+	var needed uint32
+	r, _, _ := procGetUserObjectInformationW.Call(h, 2 /* UOI_NAME */, uintptr(unsafe.Pointer(&buf[0])),
+		uintptr(len(buf)*2), uintptr(unsafe.Pointer(&needed)))
+	if r == 0 {
+		return false // can't tell; assume unlocked rather than spam the log
+	}
+	return !strings.EqualFold(syscall.UTF16ToString(buf[:]), "Default")
 }
 
 // awakeKeeper owns a locked OS thread, because SetThreadExecutionState's
@@ -126,6 +233,13 @@ func singleInstance() (func(), error) {
 // scheduled task never flashes a console window. When run from a terminal,
 // reattach to that terminal so CLI output is visible.
 func attachParentConsole() {
+	// Output already redirected (e.g. `jiggler test | Out-Host`): keep it.
+	// Piping also makes PowerShell wait for this GUI-subsystem exe.
+	if os.Stdout != nil {
+		if _, err := os.Stdout.Stat(); err == nil {
+			return
+		}
+	}
 	if r, _, _ := procAttachConsole.Call(attachParent); r == 0 {
 		return
 	}
@@ -134,6 +248,17 @@ func attachParentConsole() {
 		os.Stderr = f
 		fmt.Println()
 	}
+}
+
+// notify shows a topmost message box. Used where the result must be seen
+// even if the console output got lost (PowerShell doesn't wait for GUI exes).
+func notify(text string, ok bool) {
+	flags := uintptr(0x40 | 0x10000 | 0x40000) // INFO | SETFOREGROUND | TOPMOST
+	if !ok {
+		flags = 0x10 | 0x10000 | 0x40000 // ERROR
+	}
+	procMessageBoxW.Call(0, uintptr(unsafe.Pointer(u16(text))),
+		uintptr(unsafe.Pointer(u16("Mouse Jiggler test"))), flags)
 }
 
 func installDir() string {
@@ -169,7 +294,25 @@ func copyFile(src, dst string) error {
 	if err := out.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmp, dst)
+	// A running exe can't be overwritten or deleted, but it can be renamed.
+	// Move the old one aside so an upgrade works even if a copy is still
+	// running (the task hasn't fully stopped, or a settings window is open).
+	old := dst + ".old"
+	os.Remove(old) // leftover from a previous upgrade; fails harmlessly if in use
+	if err := os.Rename(tmp, dst); err == nil {
+		return nil
+	}
+	if err := os.Rename(dst, old); err != nil && !os.IsNotExist(err) {
+		os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, dst); err != nil {
+		os.Rename(old, dst) // put the old one back
+		os.Remove(tmp)
+		return err
+	}
+	os.Remove(old) // succeeds once nothing is running it; else cleaned up next install
+	return nil
 }
 
 func install(cfg *config) (string, error) {

@@ -2,13 +2,22 @@
 
 package main
 
-import "errors"
+import (
+	"errors"
+	"log"
+)
 
 // Non-Windows stubs so the schedule logic builds and tests anywhere.
 
 var errUnsupported = errors.New("only supported on Windows")
 
 func jiggle() error                   { return errUnsupported }
+func zeroJiggle() error               { return errUnsupported }
+func notify(string, bool)             {}
+func foregroundApp() string           { return "" }
+func watchDisplay(*log.Logger)        {}
+func idleSeconds() uint32             { return 0 }
+func sessionLocked() bool             { return false }
 func attachParentConsole()            {}
 func singleInstance() (func(), error) { return func() {}, nil }
 func install(*config) (string, error) { return "", errUnsupported }
