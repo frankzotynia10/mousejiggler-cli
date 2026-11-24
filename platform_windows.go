@@ -234,7 +234,25 @@ func copyFile(src, dst string) error {
 	if err := out.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmp, dst)
+	// A running exe can't be overwritten or deleted, but it can be renamed.
+	// Move the old one aside so an upgrade works even if a copy is still
+	// running (the task hasn't fully stopped, or a settings window is open).
+	old := dst + ".old"
+	os.Remove(old) // leftover from a previous upgrade; fails harmlessly if in use
+	if err := os.Rename(tmp, dst); err == nil {
+		return nil
+	}
+	if err := os.Rename(dst, old); err != nil && !os.IsNotExist(err) {
+		os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, dst); err != nil {
+		os.Rename(old, dst) // put the old one back
+		os.Remove(tmp)
+		return err
+	}
+	os.Remove(old) // succeeds once nothing is running it; else cleaned up next install
+	return nil
 }
 
 func install(cfg *config) (string, error) {
