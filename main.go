@@ -308,10 +308,12 @@ func runLoop(cfg *config, lg *log.Logger) error {
 	defer release()
 
 	lg.Printf("started: days=%s windows=%v interval=%s", cfg.days, cfg.windows, cfg.interval)
+	watchDisplay(lg)
 	keeper := newAwakeKeeper() // pins an OS thread for the power request
 	defer keeper.Close()
 
 	active, paused, locked := false, false, false
+	lastMiss := "" // foreground app when jiggles last failed to count
 	var last time.Time
 	tick := time.NewTicker(5 * time.Second)
 	defer tick.Stop()
@@ -348,6 +350,18 @@ func runLoop(cfg *config, lg *log.Logger) error {
 			}
 			if err := jiggle(); err != nil {
 				lg.Printf("jiggle failed: %v", err)
+			} else if !locked {
+				// Verify Windows counted it. Logged only when the state changes.
+				time.Sleep(300 * time.Millisecond)
+				if idle := idleSeconds(); idle > 2 {
+					if fg := foregroundApp(); fg != lastMiss {
+						lastMiss = fg
+						lg.Printf("jiggle did NOT reset the idle timer (idle %ds, foreground: %s). An admin window in front blocks injected input.", idle, fg)
+					}
+				} else if lastMiss != "" {
+					lastMiss = ""
+					lg.Printf("jiggles counting as activity again")
+				}
 			}
 			last = now
 		}

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"os/user"
@@ -28,6 +29,10 @@ var (
 	procAttachConsole           = kernel32.NewProc("AttachConsole")
 
 	procGetLastInputInfo          = user32.NewProc("GetLastInputInfo")
+	procGetForegroundWindow       = user32.NewProc("GetForegroundWindow")
+	procGetWindowThreadProcessId  = user32.NewProc("GetWindowThreadProcessId")
+	procQueryFullProcessImageName = kernel32.NewProc("QueryFullProcessImageNameW")
+	procPowerSettingRegister      = syscall.NewLazyDLL("powrprof.dll").NewProc("PowerSettingRegisterNotification")
 	procGetTickCount              = kernel32.NewProc("GetTickCount")
 	procOpenInputDesktop          = user32.NewProc("OpenInputDesktop")
 	procCloseDesktop              = user32.NewProc("CloseDesktop")
@@ -75,6 +80,60 @@ func jiggle() error { return sendMoves([2]int32{1, 0}, [2]int32{-1, 0}) }
 // zeroJiggle is the old zero-distance move, kept only so `jiggler test` can
 // show whether this machine honors it.
 func zeroJiggle() error { return sendMoves([2]int32{0, 0}) }
+
+// foregroundApp names the exe owning the foreground window. Used to explain
+// a jiggle that didn't count: Windows drops injected input while an
+// elevated (admin) window has focus.
+func foregroundApp() string {
+	hwnd, _, _ := procGetForegroundWindow.Call()
+	if hwnd == 0 {
+		return "(none)"
+	}
+	var pid uint32
+	procGetWindowThreadProcessId.Call(hwnd, uintptr(unsafe.Pointer(&pid)))
+	h, err := syscall.OpenProcess(0x1000 /* PROCESS_QUERY_LIMITED_INFORMATION */, false, pid)
+	if err != nil {
+		return fmt.Sprintf("pid %d", pid)
+	}
+	defer syscall.CloseHandle(h)
+	var buf [260]uint16
+	n := uint32(len(buf))
+	if r, _, _ := procQueryFullProcessImageName.Call(uintptr(h), 0, uintptr(unsafe.Pointer(&buf[0])), uintptr(unsafe.Pointer(&n))); r == 0 {
+		return fmt.Sprintf("pid %d", pid)
+	}
+	return filepath.Base(syscall.UTF16ToString(buf[:n]))
+}
+
+// watchDisplay logs every display on/off/dim transition as Windows sees it
+// (GUID_CONSOLE_DISPLAY_STATE), so the log shows whether monitors were on.
+var displayCallback uintptr // kept alive for the process lifetime
+
+// powerBroadcastSetting mirrors POWERBROADCAST_SETTING with a DWORD payload.
+type powerBroadcastSetting struct {
+	guid   syscall.GUID
+	length uint32
+	data   uint32
+}
+
+func watchDisplay(lg *log.Logger) {
+	guid := syscall.GUID{Data1: 0x6FE69556, Data2: 0x704A, Data3: 0x47A0,
+		Data4: [8]byte{0x8F, 0x24, 0xC2, 0x8D, 0x93, 0x6F, 0xDA, 0x47}}
+	displayCallback = syscall.NewCallback(func(ctx, typ uintptr, setting *powerBroadcastSetting) uintptr {
+		if typ != 0x8013 /* PBT_POWERSETTINGCHANGE */ || setting == nil {
+			return 0
+		}
+		state := setting.data
+		names := map[uint32]string{0: "OFF", 1: "ON", 2: "DIMMED"}
+		lg.Printf("display %s (Windows)", names[state])
+		return 0
+	})
+	params := struct{ callback, context uintptr }{displayCallback, 0}
+	var handle uintptr
+	if r, _, _ := procPowerSettingRegister.Call(uintptr(unsafe.Pointer(&guid)), 2, /* DEVICE_NOTIFY_CALLBACK */
+		uintptr(unsafe.Pointer(&params)), uintptr(unsafe.Pointer(&handle))); r != 0 {
+		lg.Printf("display watch unavailable (error %d)", r)
+	}
+}
 
 // idleSeconds is the system idle time Teams and the screen timeout use.
 func idleSeconds() uint32 {
