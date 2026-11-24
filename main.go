@@ -1,6 +1,6 @@
 // mousejiggler-cli: a headless, scheduled "zen" mouse jiggler for Windows.
 //
-// It sends zero-distance mouse-move events (the cursor never moves) and holds
+// It sends 1px out-and-back mouse moves (the cursor ends where it started) and holds
 // a display-required power request during scheduled windows, so monitors wake
 // up and stay on without interfering with normal use.
 //
@@ -30,7 +30,7 @@ func (m *multiFlag) String() string     { return strings.Join(*m, ",") }
 func (m *multiFlag) Set(v string) error { *m = append(*m, v); return nil }
 
 func usage() {
-	fmt.Fprintf(os.Stderr, `%s - headless scheduled mouse jiggler (cursor never moves)
+	fmt.Fprintf(os.Stderr, `%s - headless scheduled mouse jiggler (cursor ends where it started)
 
 Usage:
   jiggler                      Open the settings window
@@ -53,6 +53,8 @@ Commands:
   toggle      Resume if paused, otherwise pause for the rest of today
               (one-button control, e.g. a Stream Deck key)
   once        Send a single zen jiggle now and exit
+  test        Hands-off check that jiggles reset the Windows idle timer
+              (what Teams and the screen timeout read). Takes ~25s.
   run         Run the scheduler loop in the foreground (what the task runs)
 
 Flags (install / run / status). Any flag left out keeps the saved value:
@@ -195,6 +197,8 @@ func main() {
 		if err == nil {
 			fmt.Println("jiggled")
 		}
+	case "test":
+		err = selfTest()
 	case "status":
 		if shortOutput {
 			fmt.Println(shortState(cfg, time.Now(), taskStatus(), loopRunning()))
@@ -307,7 +311,7 @@ func runLoop(cfg *config, lg *log.Logger) error {
 	keeper := newAwakeKeeper() // pins an OS thread for the power request
 	defer keeper.Close()
 
-	active, paused := false, false
+	active, paused, locked := false, false, false
 	var last time.Time
 	tick := time.NewTicker(5 * time.Second)
 	defer tick.Stop()
@@ -333,10 +337,17 @@ func runLoop(cfg *config, lg *log.Logger) error {
 				lg.Printf("window ended: display may sleep normally")
 			}
 		}
-		// The time gap check also catches resume-from-sleep mid-window.
 		if active && now.Sub(last) >= cfg.interval {
+			if l := sessionLocked(); l != locked {
+				locked = l
+				if l {
+					lg.Printf("session is LOCKED: Windows blocks input on the lock screen, monitors may stay off until you sign in")
+				} else {
+					lg.Printf("session unlocked")
+				}
+			}
 			if err := jiggle(); err != nil {
-				lg.Printf("jiggle failed (session locked?): %v", err)
+				lg.Printf("jiggle failed: %v", err)
 			}
 			last = now
 		}

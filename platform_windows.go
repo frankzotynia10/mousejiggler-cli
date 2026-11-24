@@ -26,6 +26,12 @@ var (
 	procCreateMutexW            = kernel32.NewProc("CreateMutexW")
 	procOpenMutexW              = kernel32.NewProc("OpenMutexW")
 	procAttachConsole           = kernel32.NewProc("AttachConsole")
+
+	procGetLastInputInfo          = user32.NewProc("GetLastInputInfo")
+	procGetTickCount              = kernel32.NewProc("GetTickCount")
+	procOpenInputDesktop          = user32.NewProc("OpenInputDesktop")
+	procCloseDesktop              = user32.NewProc("CloseDesktop")
+	procGetUserObjectInformationW = user32.NewProc("GetUserObjectInformationW")
 )
 
 const (
@@ -59,13 +65,54 @@ type input struct {
 // jiggle sends a relative mouse move of 0,0. Windows treats it as user input
 // (resets idle timer, wakes displays) but the cursor does not move, so it
 // never interferes with real mouse use.
-func jiggle() error {
-	in := input{typ: inputMouse, mi: mouseInput{dwFlags: mouseeventfMove}}
-	n, _, err := procSendInput.Call(1, uintptr(unsafe.Pointer(&in)), unsafe.Sizeof(in))
-	if n != 1 {
+// jiggle moves the pointer 1px right and straight back in one atomic
+// SendInput call, so nothing can land in between and the pointer ends where
+// it started. A zero-distance move is ignored by current Windows builds: it
+// neither resets the idle timer (Teams goes Away) nor wakes monitors.
+func jiggle() error { return sendMoves([2]int32{1, 0}, [2]int32{-1, 0}) }
+
+// zeroJiggle is the old zero-distance move, kept only so `jiggler test` can
+// show whether this machine honors it.
+func zeroJiggle() error { return sendMoves([2]int32{0, 0}) }
+
+// idleSeconds is the system idle time Teams and the screen timeout use.
+func idleSeconds() uint32 {
+	var lii struct{ cbSize, dwTime uint32 }
+	lii.cbSize = 8
+	procGetLastInputInfo.Call(uintptr(unsafe.Pointer(&lii)))
+	now, _, _ := procGetTickCount.Call()
+	return (uint32(now) - lii.dwTime) / 1000
+}
+
+func sendMoves(moves ...[2]int32) error {
+	ins := make([]input, len(moves))
+	for i, m := range moves {
+		ins[i] = input{typ: inputMouse, mi: mouseInput{dx: m[0], dy: m[1], dwFlags: mouseeventfMove}}
+	}
+	n, _, err := procSendInput.Call(uintptr(len(ins)), uintptr(unsafe.Pointer(&ins[0])), unsafe.Sizeof(ins[0]))
+	if int(n) != len(ins) {
 		return fmt.Errorf("SendInput: %v", err)
 	}
 	return nil
+}
+
+// sessionLocked reports whether the input desktop is the lock screen.
+// Windows silently drops injected input there (SendInput still reports
+// success), so this is the only way to know the jiggle was blocked.
+func sessionLocked() bool {
+	h, _, _ := procOpenInputDesktop.Call(0, 0, 0x0001 /* DESKTOP_READOBJECTS */)
+	if h == 0 {
+		return true // the secure desktop can't be opened from a user process
+	}
+	defer procCloseDesktop.Call(h)
+	var buf [64]uint16
+	var needed uint32
+	r, _, _ := procGetUserObjectInformationW.Call(h, 2 /* UOI_NAME */, uintptr(unsafe.Pointer(&buf[0])),
+		uintptr(len(buf)*2), uintptr(unsafe.Pointer(&needed)))
+	if r == 0 {
+		return false // can't tell; assume unlocked rather than spam the log
+	}
+	return !strings.EqualFold(syscall.UTF16ToString(buf[:]), "Default")
 }
 
 // awakeKeeper owns a locked OS thread, because SetThreadExecutionState's

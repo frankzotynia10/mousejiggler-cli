@@ -9,6 +9,9 @@ import "errors"
 var errUnsupported = errors.New("only supported on Windows")
 
 func jiggle() error                   { return errUnsupported }
+func zeroJiggle() error               { return errUnsupported }
+func idleSeconds() uint32             { return 0 }
+func sessionLocked() bool             { return false }
 func attachParentConsole()            {}
 func singleInstance() (func(), error) { return func() {}, nil }
 func install(*config) (string, error) { return "", errUnsupported }
