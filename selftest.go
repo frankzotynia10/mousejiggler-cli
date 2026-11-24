@@ -3,18 +3,27 @@ package main
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
 // selfTest checks, on this machine, that a jiggle resets the system idle
-// timer. It also tries the old zero-distance move for comparison.
+// timer, comparing the old zero-distance move. The result goes to the
+// console, the log and a message box, so it can't be missed.
 func selfTest() error {
+	lg := openLog()
+	var report []string
+	line := func(s string) {
+		fmt.Println(s)
+		lg.Printf("test: %s", s)
+		report = append(report, s)
+	}
 	try := func(name string, f func() error) (bool, error) {
-		fmt.Printf("%s: hands off the mouse and keyboard...", name)
+		fmt.Printf("%s: hands off the mouse and keyboard (8s)...\n", name)
 		time.Sleep(8 * time.Second)
 		before := idleSeconds()
 		if before < 5 {
-			return false, errors.New("you touched something; run it again hands-off")
+			return false, errors.New("input detected during the test; run it again without touching anything")
 		}
 		if err := f(); err != nil {
 			return false, err
@@ -22,19 +31,29 @@ func selfTest() error {
 		time.Sleep(500 * time.Millisecond)
 		after := idleSeconds()
 		ok := after < before
-		fmt.Printf(" idle %ds -> %ds  %s\n", before, after, map[bool]string{true: "RESETS idle", false: "IGNORED"}[ok])
+		verdict := "IGNORED"
+		if ok {
+			verdict = "RESETS idle"
+		}
+		line(fmt.Sprintf("%s: idle %ds -> %ds, %s", name, before, after, verdict))
 		return ok, nil
 	}
-	if _, err := try("zero-distance move (old)", zeroJiggle); err != nil {
+	fail := func(err error) error {
+		line("FAIL: " + err.Error())
+		notify(strings.Join(report, "\n"), false)
 		return err
+	}
+	if _, err := try("zero-distance move (old)", zeroJiggle); err != nil {
+		return fail(err)
 	}
 	ok, err := try("1px out-and-back (current)", jiggle)
 	if err != nil {
-		return err
+		return fail(err)
 	}
 	if !ok {
-		return errors.New("the jiggle did not reset the idle timer; Teams will go Away")
+		return fail(errors.New("the jiggle did not reset the idle timer; Teams will go Away"))
 	}
-	fmt.Println("PASS: jiggles count as activity on this machine")
+	line("PASS: jiggles count as activity on this machine")
+	notify(strings.Join(report, "\n"), true)
 	return nil
 }

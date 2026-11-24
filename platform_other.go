@@ -10,6 +10,7 @@ var errUnsupported = errors.New("only supported on Windows")
 
 func jiggle() error                   { return errUnsupported }
 func zeroJiggle() error               { return errUnsupported }
+func notify(string, bool)             {}
 func idleSeconds() uint32             { return 0 }
 func sessionLocked() bool             { return false }
 func attachParentConsole()            {}

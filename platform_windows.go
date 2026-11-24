@@ -173,6 +173,13 @@ func singleInstance() (func(), error) {
 // scheduled task never flashes a console window. When run from a terminal,
 // reattach to that terminal so CLI output is visible.
 func attachParentConsole() {
+	// Output already redirected (e.g. `jiggler test | Out-Host`): keep it.
+	// Piping also makes PowerShell wait for this GUI-subsystem exe.
+	if os.Stdout != nil {
+		if _, err := os.Stdout.Stat(); err == nil {
+			return
+		}
+	}
 	if r, _, _ := procAttachConsole.Call(attachParent); r == 0 {
 		return
 	}
@@ -181,6 +188,17 @@ func attachParentConsole() {
 		os.Stderr = f
 		fmt.Println()
 	}
+}
+
+// notify shows a topmost message box. Used where the result must be seen
+// even if the console output got lost (PowerShell doesn't wait for GUI exes).
+func notify(text string, ok bool) {
+	flags := uintptr(0x40 | 0x10000 | 0x40000) // INFO | SETFOREGROUND | TOPMOST
+	if !ok {
+		flags = 0x10 | 0x10000 | 0x40000 // ERROR
+	}
+	procMessageBoxW.Call(0, uintptr(unsafe.Pointer(u16(text))),
+		uintptr(unsafe.Pointer(u16("Mouse Jiggler test"))), flags)
 }
 
 func installDir() string {
